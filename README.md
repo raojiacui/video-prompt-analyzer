@@ -231,3 +231,5 @@ VideoPromptAnalyzer/
 ---
 
 *提示词设计文档详见 `提示词设计文档.md`*
+
+在此工具的基础上衍生的网站为 prompt-lens.cc.cd
