@@ -21,103 +21,158 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QScrollArea, QFrame, QFileDialog,
     QProgressBar, QMessageBox, QTabWidget, QSplitter, QCheckBox,
-    QSpinBox, QGroupBox, QGridLayout, QDialog, QLineEdit, QFormLayout
+    QSpinBox, QGroupBox, QGridLayout, QDialog, QLineEdit, QFormLayout,
+    QComboBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor
 import requests
 from PIL import Image
 import cv2
-import json
 
 
-# ==================== 配置文件 ====================
+# ==================== 配置管理类 ====================
 CONFIG_FILE = "config.json"
 
 
-def load_config():
-    """加载配置文件"""
-    default_config = {
-        "api_key": "",
-        "proxy_host": "",
-        "proxy_port": ""
-    }
-    try:
-        config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILE)
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                print(f"[DEBUG] 配置已加载: {config_path}")
-                return {**default_config, **loaded}
-    except Exception as e:
-        print(f"[DEBUG] 加载配置失败: {e}")
-    return default_config
+class Config:
+    """配置管理单例类"""
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+
+        # 加载配置文件
+        self._config = self._load_config()
+
+        # API 配置
+        self.api_key = (
+            os.environ.get("ZHIPU_API_KEY", "") or
+            os.environ.get("GEMINI_API_KEY", "") or
+            os.environ.get("OPENROUTER_API_KEY", "")
+        )
+        if self._config.get("api_key"):
+            self.api_key = self._config["api_key"]
+
+        # 代理配置
+        self.proxy_host = self._config.get("proxy_host", "")
+        self.proxy_port = self._config.get("proxy_port", "")
+        self.api_provider = self._config.get("api_provider", "zhipu")
+
+    def _load_config(self):
+        """加载配置文件"""
+        default_config = {
+            "api_key": "",
+            "proxy_host": "",
+            "proxy_port": "",
+            "api_provider": "zhipu"  # 新增：显式指定 API 提供商
+        }
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILE)
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    return {**default_config, **json.load(f)}
+        except Exception as e:
+            print(f"[Config] 加载配置失败: {e}")
+        return default_config
+
+    def save(self):
+        """保存配置到文件"""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILE)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "api_key": self.api_key,
+                    "proxy_host": self.proxy_host,
+                    "proxy_port": self.proxy_port,
+                    "api_provider": getattr(self, 'api_provider', 'zhipu')
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[Config] 保存配置失败: {e}")
+
+    def get_proxy(self):
+        """获取代理配置"""
+        if self.proxy_host and self.proxy_port:
+            return {"http": f"http://{self.proxy_host}:{self.proxy_port}", "https": f"http://{self.proxy_host}:{self.proxy_port}"}
+        return None
+
+    def get_api_provider(self) -> str:
+        """获取 API 提供商"""
+        return getattr(self, 'api_provider', 'zhipu')
+
+    def set_api_provider(self, provider: str):
+        """设置 API 提供商"""
+        self.api_provider = provider
+
+    def set_api_key(self, key: str):
+        """设置 API Key"""
+        self.api_key = key
+
+    def set_proxy(self, host: str, port: str):
+        """设置代理"""
+        self.proxy_host = host if host else ""
+        self.proxy_port = port if port else ""
 
 
-def save_config(config):
-    """保存配置文件"""
-    try:
-        config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILE)
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        print(f"[DEBUG] 配置已保存到: {config_path}")
-    except Exception as e:
-        print(f"[ERROR] 保存配置失败: {e}")
+# 全局配置实例
+_config_instance = Config()
 
 
-# ==================== 配置 ====================
-# 支持: 智谱AI / Google Gemini / OpenRouter API
-DEFAULT_API_KEY = os.environ.get("ZHIPU_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("OPENROUTER_API_KEY", "")
-
-# API 配置
-ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-ZHIPU_MODEL = "glm-4.6v"  # 智谱视觉模型
-
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
-GEMINI_MODEL = "gemini-2.0-flash-exp"
-
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "google/gemini-3-flash-preview"
-
-# 默认使用智谱AI
-API_BASE_URL = ZHIPU_API_URL
-MODEL_NAME = ZHIPU_MODEL
-
-# 全局 API Key
-api_key = DEFAULT_API_KEY
-
-# 从配置文件加载
-config = load_config()
-if config["api_key"]:
-    api_key = config["api_key"]
-
-
+# ==================== 向后兼容函数 ====================
 def get_api_key():
-    global api_key
-    return api_key
+    """获取 API Key（兼容函数）"""
+    return _config_instance.api_key
 
 
 def set_api_key(key: str):
-    global api_key
-    api_key = key
-
-
-# 代理设置
-proxy_host = None
-proxy_port = None
-
-
-def get_proxy():
-    global proxy_host, proxy_port
-    if proxy_host and proxy_port:
-        return {"http": f"http://{proxy_host}:{proxy_port}", "https": f"http://{proxy_host}:{proxy_port}"}
-    return None
+    """设置 API Key（兼容函数）"""
+    _config_instance.set_api_key(key)
 
 
 def set_proxy(host: str, port: str):
-    global proxy_host, proxy_port
-    proxy_host = host if host else None
-    proxy_port = port if port else None
+    """设置代理（兼容函数）"""
+    _config_instance.set_proxy(host, port)
+
+
+def get_proxy():
+    """获取代理配置（兼容函数）"""
+    return _config_instance.get_proxy()
+
+
+# ==================== API 常量 ====================
+
+
+# ==================== API 常量 ====================
+class APIProvider:
+    """API 提供商枚举"""
+    ZHIPU = "zhipu"
+    GEMINI = "gemini"
+    OPENROUTER = "openrouter"
+
+
+# API 配置
+API_CONFIG = {
+    APIProvider.ZHIPU: {
+        "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "model": "glm-4.6v"
+    },
+    APIProvider.GEMINI: {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent",
+        "model": "gemini-2.0-flash-exp"
+    },
+    APIProvider.OPENROUTER: {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "model": "google/gemini-3-flash-preview"
+    }
+}
 
 
 # ==================== 设置对话框 ====================
@@ -125,15 +180,27 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(500)
         self.setModal(True)
 
         layout = QFormLayout(self)
 
+        # API 提供商选择
+        self.api_provider_combo = QComboBox()
+        self.api_provider_combo.addItems(["智谱AI (glm-4v)", "Google Gemini", "OpenRouter"])
+        current_provider = _config_instance.get_api_provider()
+        if current_provider == "gemini":
+            self.api_provider_combo.setCurrentIndex(1)
+        elif current_provider == "openrouter":
+            self.api_provider_combo.setCurrentIndex(2)
+        else:
+            self.api_provider_combo.setCurrentIndex(0)
+        layout.addRow("API 提供商:", self.api_provider_combo)
+
         # API Key
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.Password)
-        self.api_key_input.setText(config.get("api_key", ""))
+        self.api_key_input.setText(_config_instance.api_key)
         self.api_key_input.setPlaceholderText("输入你的 API Key")
         layout.addRow("API Key:", self.api_key_input)
 
@@ -141,10 +208,10 @@ class SettingsDialog(QDialog):
         proxy_layout = QHBoxLayout()
         self.proxy_host_input = QLineEdit()
         self.proxy_host_input.setPlaceholderText("127.0.0.1")
-        self.proxy_host_input.setText(config.get("proxy_host", proxy_host or ""))
+        self.proxy_host_input.setText(_config_instance.proxy_host)
         self.proxy_port_input = QLineEdit()
         self.proxy_port_input.setPlaceholderText("7890")
-        self.proxy_port_input.setText(config.get("proxy_port", str(proxy_port) if proxy_port else ""))
+        self.proxy_port_input.setText(_config_instance.proxy_port)
         proxy_layout.addWidget(QLabel("地址:"))
         proxy_layout.addWidget(self.proxy_host_input)
         proxy_layout.addWidget(QLabel("端口:"))
@@ -152,22 +219,18 @@ class SettingsDialog(QDialog):
         layout.addRow("代理 (VPN需开启):", proxy_layout)
 
         help_label = QLabel(
-            "\n【API 选项】\n\n"
+            "\n【API 选项说明】\n\n"
             "1. 智谱AI (推荐，国内):\n"
             "   • 获取: https://open.bigmodel.cn/usercenter/apikeys\n"
-            "   • Key 格式: 包含点号的密钥\n"
-            "   • 模型: glm-4v (支持图片分析)\n"
             "   • 不需要代理\n\n"
-            "2. Google Gemini (免费):\n"
+            "2. Google Gemini:\n"
             "   • 获取: https://aistudio.google.com/app/apikey\n"
-            "   • Key 格式: AIza 开头\n"
             "   • 需要代理 (VPN)\n\n"
             "3. OpenRouter:\n"
             "   • 获取: https://openrouter.ai/keys\n"
-            "   • Key 格式: sk-or-v1 开头\n"
-            "   • 不需要代理"
+            "   • 支持多种模型"
         )
-        help_label.setStyleSheet("color: #888;")
+        help_label.setStyleSheet("color: #8A8580; font-size: 12px;")
         layout.addRow(help_label)
 
         buttons = QHBoxLayout()
@@ -183,32 +246,18 @@ class SettingsDialog(QDialog):
 
     def save_and_close(self):
         key = self.api_key_input.text().strip()
-        print(f"[DEBUG] 保存 API Key: {key[:10]}..." if key else "[DEBUG] API Key 为空")
-        set_api_key(key)
-
         host = self.proxy_host_input.text().strip()
         port = self.proxy_port_input.text().strip()
+
+        # 获取选中的 API 提供商
+        provider_map = {"智谱AI (glm-4v)": "zhipu", "Google Gemini": "gemini", "OpenRouter": "openrouter"}
+        provider = provider_map.get(self.api_provider_combo.currentText(), "zhipu")
+
+        # 使用全局配置
+        set_api_key(key)
         set_proxy(host, port)
-
-        # 保存到配置文件
-        config_data = {
-            "api_key": key,
-            "proxy_host": host,
-            "proxy_port": port
-        }
-        save_config(config_data)
-
-        # 立即验证是否保存成功
-        try:
-            config_path = os.path.join(os.path.dirname(__file__), CONFIG_FILE)
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-                    print(f"[DEBUG] 验证保存成功，api_key长度: {len(saved.get('api_key', ''))}")
-            else:
-                print(f"[ERROR] 配置文件不存在: {config_path}")
-        except Exception as e:
-            print(f"[ERROR] 验证失败: {e}")
+        _config_instance.set_api_provider(provider)
+        _config_instance.save()
 
         self.accept()
 
@@ -511,15 +560,13 @@ class AIAnalyzer(QThread):
     def call_api(self, messages: List[dict]) -> Optional[str]:
         api_key = get_api_key()
 
-        # 判断 API 类型
-        if "." in api_key and len(api_key) > 30:
-            # 智谱AI API Key 格式: id.secret
+        # 使用配置中的 API 提供商（不再基于 key 格式猜测）
+        provider = _config_instance.get_api_provider()
+        if provider == APIProvider.ZHIPU:
             return self.call_zhipu_api(messages, api_key)
-        elif api_key.startswith("AIza") or api_key.startswith("GOOA"):
-            # Google Gemini API
+        elif provider == APIProvider.GEMINI:
             return self.call_gemini_api(messages, api_key)
         else:
-            # OpenRouter API
             return self.call_openrouter_api(messages, api_key)
 
     def call_zhipu_api(self, messages: List[dict], api_key: str) -> Optional[str]:
@@ -548,20 +595,16 @@ class AIAnalyzer(QThread):
                         })
                 zhipu_messages.append({"role": "user", "content": content_list})
 
+        zhipu_config = API_CONFIG[APIProvider.ZHIPU]
         payload = {
-            "model": ZHIPU_MODEL,
+            "model": zhipu_config["model"],
             "messages": zhipu_messages,
             "max_tokens": 4096,
             "temperature": 0.7,
         }
 
-        # 调试输出
-        print(f"[DEBUG] 智谱AI请求: {json.dumps(payload, ensure_ascii=False)[:500]}...")
-
         try:
-            response = requests.post(ZHIPU_API_URL, headers=headers, json=payload, timeout=120, proxies=proxies)
-            print(f"[DEBUG] 响应状态: {response.status_code}")
-            print(f"[DEBUG] 响应内容: {response.text[:500]}...")
+            response = requests.post(zhipu_config["url"], headers=headers, json=payload, timeout=120, proxies=proxies)
             response.raise_for_status()
             result = response.json()
 
@@ -613,10 +656,11 @@ class AIAnalyzer(QThread):
                 ]
             })
 
+        gemini_config = API_CONFIG[APIProvider.GEMINI]
         payload = {"contents": contents, "generationConfig": {"maxOutputTokens": 4096}}
 
         try:
-            url = f"{GEMINI_API_URL}?key={api_key}"
+            url = f"{gemini_config['url']}?key={api_key}"
             response = requests.post(url, json=payload, timeout=120, proxies=proxies)
             response.raise_for_status()
             result = response.json()
@@ -642,15 +686,16 @@ class AIAnalyzer(QThread):
             "X-Title": "Video Prompt Analyzer",
         }
 
+        openrouter_config = API_CONFIG[APIProvider.OPENROUTER]
         # OpenRouter 使用自己的 URL 和模型名称
         payload = {
-            "model": OPENROUTER_MODEL,
+            "model": openrouter_config["model"],
             "messages": messages,
             "max_tokens": 4096,
         }
 
         try:
-            response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=120, proxies=proxies)
+            response = requests.post(openrouter_config["url"], headers=headers, json=payload, timeout=120, proxies=proxies)
             response.raise_for_status()
             result = response.json()
 
@@ -673,36 +718,20 @@ class AIAnalyzer(QThread):
             return None
 
     def run(self):
-        print(f"[DEBUG] AIAnalyzer run() called, frames: {len(self.frames)}, mode: {self.analyze_mode}")
-
         if not get_api_key():
             self.error.emit("请先点击「⚙️ API 设置」按钮填写 API Key\n\n推荐使用智谱AI（国内，无需代理）:\n访问 https://open.bigmodel.cn/usercenter/apikeys 获取")
             return
 
-        print(f"[DEBUG] API Key found: {get_api_key()[:20]}...")
         self.progress.emit("开始分析...")
         try:
             if self.analyze_mode == "all_together" and len(self.frames) > 1:
-                print(f"[DEBUG] Calling analyze_batch...")
                 self.analyze_batch()
             elif self.analyze_mode == "batch":
-                print(f"[DEBUG] Calling analyze_batch...")
                 self.analyze_batch()
             else:
-                print(f"[DEBUG] Calling analyze_single...")
                 self.analyze_single()
         except Exception as e:
-            print(f"[DEBUG] Error in run(): {e}")
-            import traceback
-            traceback.print_exc()
             self.error.emit(f"分析出错: {str(e)}")
-
-        if self.analyze_mode == "all_together" and len(self.frames) > 1:
-            self.analyze_batch()
-        elif self.analyze_mode == "batch":
-            self.analyze_batch()
-        else:
-            self.analyze_single()
 
     def analyze_single(self):
         results = {}
@@ -760,7 +789,7 @@ class VideoPromptAnalyzer(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Video Prompt Analyzer v2.0 - 大字体版")
-        self.setMinimumSize(1400, 900)
+        self.setMinimumSize(1600, 1000)
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -787,27 +816,27 @@ class VideoPromptAnalyzer(QMainWindow):
     def create_toolbar(self) -> QFrame:
         toolbar = QFrame()
         toolbar.setFrameStyle(QFrame.Shape.StyledPanel)
-        toolbar.setMaximumHeight(120)
+        toolbar.setMaximumHeight(180)
 
         layout = QGridLayout(toolbar)
         layout.setContentsMargins(15, 10, 15, 10)
         layout.setSpacing(10)
 
         btn_video = QPushButton("📹 加载视频")
-        btn_video.setMinimumHeight(50)
-        btn_video.setFont(QFont("Microsoft YaHei", 24, QFont.Weight.Bold))
+        btn_video.setMinimumHeight(70)
+        btn_video.setFont(QFont("Microsoft YaHei", 28, QFont.Weight.Bold))
         btn_video.clicked.connect(self.load_video)
         layout.addWidget(btn_video, 0, 0)
 
         btn_images = QPushButton("🖼️ 加载图片")
-        btn_images.setMinimumHeight(50)
-        btn_images.setFont(QFont("Microsoft YaHei", 24, QFont.Weight.Bold))
+        btn_images.setMinimumHeight(70)
+        btn_images.setFont(QFont("Microsoft YaHei", 28, QFont.Weight.Bold))
         btn_images.clicked.connect(self.load_images)
         layout.addWidget(btn_images, 0, 1)
 
         btn_settings = QPushButton("⚙️ API 设置")
-        btn_settings.setMinimumHeight(50)
-        btn_settings.setFont(QFont("Microsoft YaHei", 24, QFont.Weight.Bold))
+        btn_settings.setMinimumHeight(70)
+        btn_settings.setFont(QFont("Microsoft YaHei", 28, QFont.Weight.Bold))
         btn_settings.clicked.connect(self.open_settings)
         layout.addWidget(btn_settings, 0, 2)
 
@@ -864,14 +893,14 @@ class VideoPromptAnalyzer(QMainWindow):
         layout.addWidget(btn_analyze, 0, 5, 2, 1)
 
         btn_export = QPushButton("💾 导出结果")
-        btn_export.setMinimumHeight(50)
-        btn_export.setFont(QFont("Microsoft YaHei", 24, QFont.Weight.Bold))
+        btn_export.setMinimumHeight(70)
+        btn_export.setFont(QFont("Microsoft YaHei", 28, QFont.Weight.Bold))
         btn_export.clicked.connect(self.export_results)
         layout.addWidget(btn_export, 1, 0)
 
         btn_clear = QPushButton("🗑️ 清空")
-        btn_clear.setMinimumHeight(50)
-        btn_clear.setFont(QFont("Microsoft YaHei", 24, QFont.Weight.Bold))
+        btn_clear.setMinimumHeight(70)
+        btn_clear.setFont(QFont("Microsoft YaHei", 28, QFont.Weight.Bold))
         btn_clear.clicked.connect(self.clear_all)
         layout.addWidget(btn_clear, 1, 1)
 
@@ -893,8 +922,14 @@ class VideoPromptAnalyzer(QMainWindow):
 
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(400, 300)
-        self.preview_label.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        self.preview_label.setMinimumSize(600, 400)
+        self.preview_label.setStyleSheet("""
+            background-color: #1E1C1A;
+            border: 2px dashed #3A352E;
+            border-radius: 16px;
+            color: #6A6560;
+            font-size: 14px;
+        """)
         self.preview_label.setFont(QFont("Microsoft YaHei", 14))
         self.preview_label.setText("请加载视频或图片\n\n支持格式:\n• 视频: MP4, MOV, AVI\n• 图片: JPG, PNG")
         layout.addWidget(self.preview_label, 1)
@@ -904,7 +939,7 @@ class VideoPromptAnalyzer(QMainWindow):
         layout.addWidget(thumb_label)
 
         self.thumbnail_area = QScrollArea()
-        self.thumbnail_area.setMaximumHeight(120)
+        self.thumbnail_area.setMaximumHeight(160)
         self.thumbnail_area.setWidgetResizable(True)
         self.thumbnail_widget = QWidget()
         self.thumbnail_layout = QHBoxLayout(self.thumbnail_widget)
@@ -925,7 +960,7 @@ class VideoPromptAnalyzer(QMainWindow):
         layout.addWidget(title)
 
         self.tab_widget = QTabWidget()
-        self.tab_widget.setFont(QFont("Microsoft YaHei", 14))
+        self.tab_widget.setFont(QFont("Microsoft YaHei", 18))
         layout.addWidget(self.tab_widget, 1)
 
         return panel
@@ -937,118 +972,229 @@ class VideoPromptAnalyzer(QMainWindow):
             self.mode_single.setChecked(False)
 
     def apply_dark_theme(self):
+        # Anthropic 风格：温暖柔和 × 精致克制 × 有机自然 - 更大字体版
         self.setStyleSheet("""
+            /* ===== 全局 ===== */
             QMainWindow {
-                background-color: #1e1e1e;
+                background-color: #1C1A18;
             }
+
+            /* ===== 框架 ===== */
             QFrame {
-                background-color: #2a2a2a;
-                border-radius: 8px;
+                background-color: #252220;
+                border-radius: 16px;
             }
+
+            /* ===== 按钮 ===== */
             QPushButton {
-                background-color: #3a3a3a;
-                color: #e0e0e0;
-                border: 1px solid #4a4a4a;
-                border-radius: 6px;
-                padding: 10px 18px;
-                font-size: 28px;
-                font-weight: bold;
+                background-color: #3A352E;
+                color: #E8E2D9;
+                border: 1px solid #4A433A;
+                border-radius: 12px;
+                padding: 18px 32px;
+                font-size: 22px;
+                font-weight: 500;
+                letter-spacing: 0.5px;
             }
             QPushButton:hover {
-                background-color: #4a4a4a;
+                background-color: #4A433A;
+                border-color: #5A534A;
             }
             QPushButton:pressed {
-                background-color: #5a5a5a;
+                background-color: #2A2724;
             }
             QPushButton:disabled {
-                background-color: #2a2a2a;
-                color: #666;
+                background-color: #252220;
+                color: #6A6560;
+                border-color: #3A352E;
             }
-            QTextEdit {
-                background-color: #1a1a1a;
-                color: #e0e0e0;
-                border: 1px solid #3a3a3a;
-                border-radius: 6px;
-                padding: 15px;
-                font-family: 'Microsoft YaHei', 'SimHei', sans-serif;
-                font-size: 28px;
-                line-height: 1.6;
-            }
-            QScrollArea {
+
+            /* 主按钮 - 焦糖色渐变 */
+            QPushButton#analyzeBtn {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #D97757, stop:1 #C06548);
+                color: #FFFFFF;
                 border: none;
-                background-color: transparent;
+                font-size: 28px;
+                font-weight: 600;
+                letter-spacing: 1px;
+                padding: 20px 40px;
             }
+            QPushButton#analyzeBtn:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #E88868, stop:1 #D97757);
+            }
+            QPushButton#analyzeBtn:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #C06548, stop:1 #B05538);
+            }
+
+            /* ===== 输入框 ===== */
+            QLineEdit {
+                background-color: #1E1C1A;
+                color: #E8E2D9;
+                border: 1px solid #3A352E;
+                border-radius: 10px;
+                padding: 16px 20px;
+                font-size: 20px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #D97757;
+                background-color: #252220;
+            }
+            QLineEdit::placeholder {
+                color: #6A6560;
+            }
+
+            /* ===== 文字编辑 ===== */
+            QTextEdit {
+                background-color: #1E1C1A;
+                color: #D4CCC2;
+                border: 1px solid #3A352E;
+                border-radius: 12px;
+                padding: 24px;
+                font-family: 'Microsoft YaHei', 'SimHei', sans-serif;
+                font-size: 22px;
+                line-height: 1.8;
+            }
+
+            /* ===== 标签页 ===== */
             QTabWidget::pane {
-                border: 1px solid #3a3a3a;
-                border-radius: 6px;
-                background-color: #1e1e1e;
+                border: 1px solid #3A352E;
+                border-radius: 12px;
+                background-color: #1C1A18;
             }
             QTabBar::tab {
-                background-color: #2a2a2a;
-                color: #aaa;
-                padding: 12px 25px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                margin-right: 2px;
-                font-size: 24px;
-                font-weight: bold;
+                background-color: #252220;
+                color: #8A8580;
+                padding: 18px 32px;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                margin-right: 4px;
+                font-size: 18px;
+                font-weight: 500;
             }
             QTabBar::tab:selected {
-                background-color: #1e1e1e;
-                color: #4CAF50;
+                background-color: #1E1C1A;
+                color: #D97757;
             }
             QTabBar::tab:hover {
-                background-color: #252525;
+                background-color: #2A2724;
+                color: #B0AAA5;
             }
+
+            /* ===== 分组框 ===== */
             QGroupBox {
-                color: #e0e0e0;
-                border: 1px solid #3a3a3a;
-                border-radius: 6px;
-                margin-top: 10px;
-                padding: 12px;
-                font-size: 24px;
-                font-weight: bold;
+                color: #D4CCC2;
+                border: 1px solid #3A352E;
+                border-radius: 14px;
+                margin-top: 16px;
+                padding: 20px;
+                font-size: 20px;
+                font-weight: 500;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
+                left: 16px;
+                padding: 0 8px;
+                color: #D97757;
+                font-weight: 600;
             }
+
+            /* ===== 数字输入 ===== */
             QSpinBox {
-                background-color: #2a2a2a;
-                color: #e0e0e0;
-                border: 1px solid #3a3a3a;
-                border-radius: 4px;
-                padding: 6px;
-                font-size: 24px;
-                min-height: 25px;
+                background-color: #1E1C1A;
+                color: #E8E2D9;
+                border: 1px solid #3A352E;
+                border-radius: 8px;
+                padding: 14px;
+                font-size: 20px;
             }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background-color: #3A352E;
+                border-radius: 6px;
+                width: 32px;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background-color: #4A433A;
+            }
+
+            /* ===== 进度条 ===== */
             QProgressBar {
-                border: 1px solid #3a3a3a;
-                border-radius: 4px;
+                border: 1px solid #3A352E;
+                border-radius: 8px;
                 text-align: center;
-                background-color: #2a2a2a;
-                font-size: 24px;
-                min-height: 25px;
+                background-color: #252220;
+                font-size: 18px;
+                min-height: 36px;
+                color: #D4CCC2;
             }
             QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 3px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #D97757, stop:1 #E8A080);
+                border-radius: 7px;
             }
+
+            /* ===== 标签 ===== */
             QLabel {
-                color: #e0e0e0;
-                font-size: 24px;
+                color: #D4CCC2;
+                font-size: 20px;
             }
-            QLineEdit {
-                background-color: #2a2a2a;
-                color: #e0e0e0;
-                border: 1px solid #3a3a3a;
+
+            /* ===== 复选框 ===== */
+            QCheckBox {
+                color: #D4CCC2;
+                font-size: 20px;
+                spacing: 12px;
+            }
+            QCheckBox::indicator {
+                width: 26px;
+                height: 26px;
+                border-radius: 6px;
+                border: 2px solid #4A433A;
+                background-color: #1E1C1A;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #D97757;
+                border-color: #D97757;
+            }
+            QCheckBox::indicator:hover {
+                border-color: #5A534A;
+            }
+
+            /* ===== 状态栏 ===== */
+            QStatusBar {
+                background-color: #1C1A18;
+                color: #8A8580;
+                font-size: 16px;
+                border-top: 1px solid #3A352E;
+            }
+
+            /* ===== 预览区 ===== */
+            QLabel#previewLabel {
+                background-color: #1E1C1A;
+                border: 2px dashed #3A352E;
+                border-radius: 16px;
+                color: #6A6560;
+                font-size: 20px;
+            }
+
+            /* ===== 滚动条 ===== */
+            QScrollBar:vertical {
+                background: transparent;
+                width: 8px;
                 border-radius: 4px;
-                padding: 8px;
-                font-size: 24px;
-                min-height: 30px;
             }
-            QFileDialog {
-                font-size: 24px;
+            QScrollBar::handle:vertical {
+                background: #4A433A;
+                border-radius: 4px;
+                min-height: 40px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #5A534A;
+            }
+            QScrollBar::add-line, QScrollBar::sub-line {
+                height: 0px;
             }
         """)
 
@@ -1167,13 +1313,10 @@ class VideoPromptAnalyzer(QMainWindow):
             self.preview_label.setText(f"加载失败: {str(e)}")
 
     def start_analysis(self):
-        print(f"[DEBUG] start_analysis called, current_frames: {len(self.current_frames)}")
-
         if not self.current_frames:
             QMessageBox.warning(self, "提示", "请先加载视频或图片")
             return
 
-        print(f"[DEBUG] Frames: {self.current_frames}")
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
 
@@ -1182,14 +1325,12 @@ class VideoPromptAnalyzer(QMainWindow):
         else:
             mode = "all_together" if len(self.current_frames) > 1 else "single"
 
-        print(f"[DEBUG] Mode: {mode}")
         self.analyzer = AIAnalyzer(self.current_frames, mode)
         self.analyzer.progress.connect(self.statusBar().showMessage)
         self.analyzer.result.connect(self.on_analysis_result)
         self.analyzer.batch_complete.connect(self.on_batch_complete)
         self.analyzer.error.connect(self.on_analysis_error)
 
-        print(f"[DEBUG] Starting analyzer thread...")
         self.analyzer.start()
 
     def on_analysis_result(self, frame_path: str, result: str):
